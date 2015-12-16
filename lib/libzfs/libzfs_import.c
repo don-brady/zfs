@@ -22,6 +22,7 @@
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2012 by Delphix. All rights reserved.
  * Copyright 2014 Nexenta Systems, Inc. All rights reserved.
+ * Copyright (c) 2015, Intel Corporation.
  */
 
 /*
@@ -45,6 +46,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <libintl.h>
+#include <libudev.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -97,28 +99,178 @@ typedef struct pool_list {
 	name_entry_t		*names;
 } pool_list_t;
 
-static char *
-get_devid(const char *path)
+
+/*
+ * linux persistent vdev label device strings
+ *
+ * based on libudev for consistency with libudev disk add/remove events
+ */
+
+#define	DEV_BYID_PATH	"/dev/disk/by-id/"
+
+typedef struct vdev_dev_strs {
+	char	vds_devid[128];
+	char	vds_devphys[128];
+} vdev_dev_strs_t;
+
+/*
+ * Get the persistent device id string (describes what)
+ *
+ * used by auto-{online,expand,replace}
+ */
+static int
+udev_device_get_devid(struct udev_device *dev, char *bufptr, size_t buflen)
 {
-	int fd;
-	ddi_devid_t devid;
-	char *minor, *ret;
+	struct udev_list_entry *entry;
+	const char *bus;
+	char devbyid[MAXPATHLEN];
 
-	if ((fd = open(path, O_RDONLY)) < 0)
-		return (NULL);
+	bus = udev_device_get_property_value(dev, "ID_BUS");
+	if (bus == NULL)
+		return (ENODATA);
 
-	minor = NULL;
-	ret = NULL;
-	if (devid_get(fd, &devid) == 0) {
-		if (devid_get_minor_name(fd, &minor) == 0)
-			ret = devid_str_encode(devid, minor);
-		if (minor != NULL)
-			devid_str_free(minor);
-		devid_free(devid);
+	/*
+	 * locate the bus specific by-id link
+	 */
+	(void) snprintf(devbyid, sizeof (devbyid), "%s%s-", DEV_BYID_PATH, bus);
+	entry = udev_device_get_devlinks_list_entry(dev);
+	while (entry != NULL) {
+		const char *name;
+
+		name = udev_list_entry_get_name(entry);
+		if (strncmp(name, devbyid, strlen(devbyid)) == 0) {
+			name += strlen(DEV_BYID_PATH);
+			(void) strlcpy(bufptr, name, buflen);
+			return (0);
+		}
+		entry = udev_list_entry_get_next(entry);
 	}
-	(void) close(fd);
+
+	return (ENODATA);
+}
+
+/*
+ * Get the persistent physical location string (describes where)
+ *
+ * used by auto-{online,expand,replace}
+ */
+static int
+udev_device_get_physical(struct udev_device *dev, char *bufptr, size_t buflen)
+{
+	const char *physpath;
+
+	physpath = udev_device_get_property_value(dev, "ID_PATH");
+	if (physpath != NULL && physpath[0] != '\0') {
+		(void) strlcpy(bufptr, physpath, buflen);
+		return (0);
+	}
+
+	return (ENODATA);
+}
+
+/*
+ * Encode the persistent devices strings for a vdev disk label
+ */
+static int
+encode_device_strings(const char *path, vdev_dev_strs_t *ds)
+{
+	struct udev *udev;
+	struct udev_device *dev;
+	char nodepath[MAXPATHLEN];
+	char *sysname;
+	const char *type;
+	int ret = ENODEV;
+
+	if ((udev = udev_new()) == NULL) {
+		return (ENXIO);
+	}
+
+	/* resolve path to its runtime device node */
+	if (realpath(path, nodepath) == NULL) {
+		goto no_dev;
+	}
+	sysname = strrchr(nodepath, '/') + 1;
+
+	/* instantiate a udev device */
+	dev = udev_device_new_from_subsystem_sysname(udev, "block", sysname);
+	if (dev == NULL) {
+		goto no_dev;
+	}
+
+	/* expecting a disk */
+	type = udev_device_get_property_value(dev, "ID_TYPE");
+	if (type != NULL && strcmp(type, "disk") != 0) {
+		goto no_dev_ref;
+	}
+
+	ret = udev_device_get_devid(dev, ds->vds_devid, sizeof (ds->vds_devid));
+	if (ret != 0)
+		goto no_dev_ref;
+
+	/* physical location string is optional */
+	if (udev_device_get_physical(dev, ds->vds_devphys,
+	    sizeof (ds->vds_devphys)) != 0) {
+		ds->vds_devphys[0] = '\0'; /* empty string --> not available */
+	}
+
+no_dev_ref:
+	udev_device_unref(dev);
+no_dev:
+	udev_unref(udev);
 
 	return (ret);
+}
+
+/*
+ * Update a leaf vdev's persistent device strings (linux specific)
+ *
+ * - only applies for a whole-disk leaf vdev
+ * - updated during pool create|add|attach|import
+ * - used for matching in disk-add events during auto-{online,expand,replace}
+ * - stored in a leaf disk config label (i.e. alongside 'path' NVP)
+ * - these strings are currently not used in kernel (like for vdev_disk_open)
+ *
+ * example values:
+ * 	devid:		'scsi-MG03SCA300_350000494a8cb3d67-part1'
+ * 	phys_path:	'pci-0000:04:00.0-sas-0x50000394a8cb3d67-lun-0'
+ */
+void
+update_vdev_config_dev_strs(nvlist_t *nv)
+{
+	vdev_dev_strs_t vds;
+	char *type, *path;
+	uint64_t wholedisk;
+
+	/*
+	 * Only whole disks require extra device info
+	 */
+	if (nvlist_lookup_string(nv, ZPOOL_CONFIG_TYPE, &type) != 0 ||
+	    strcmp(type, VDEV_TYPE_DISK) != 0) {
+		return;
+	}
+	if (nvlist_lookup_uint64(nv, ZPOOL_CONFIG_WHOLE_DISK,
+	    &wholedisk) != 0 || wholedisk == 0) {
+		return;
+	}
+
+	if (nvlist_lookup_string(nv, ZPOOL_CONFIG_PATH, &path) != 0) {
+		return;
+	}
+
+	/*
+	 * Update device string values in config nvlist
+	 */
+	if (encode_device_strings(path, &vds) == 0) {
+		(void) nvlist_add_string(nv, ZPOOL_CONFIG_DEVID, vds.vds_devid);
+		if (vds.vds_devphys[0] != '\0') {
+			(void) nvlist_add_string(nv, ZPOOL_CONFIG_PHYS_PATH,
+			    vds.vds_devphys);
+		}
+	} else {
+		/* clear out any potentially stale entries */
+		(void) nvlist_remove_all(nv, ZPOOL_CONFIG_DEVID);
+		(void) nvlist_remove_all(nv, ZPOOL_CONFIG_PHYS_PATH);
+	}
 }
 
 
@@ -133,7 +285,7 @@ fix_paths(nvlist_t *nv, name_entry_t *names)
 	uint_t c, children;
 	uint64_t guid;
 	name_entry_t *ne, *best;
-	char *path, *devid;
+	char *path;
 
 	if (nvlist_lookup_nvlist_array(nv, ZPOOL_CONFIG_CHILDREN,
 	    &child, &children) == 0) {
@@ -200,13 +352,8 @@ fix_paths(nvlist_t *nv, name_entry_t *names)
 	if (nvlist_add_string(nv, ZPOOL_CONFIG_PATH, best->ne_name) != 0)
 		return (-1);
 
-	if ((devid = get_devid(best->ne_name)) == NULL) {
-		(void) nvlist_remove_all(nv, ZPOOL_CONFIG_DEVID);
-	} else {
-		if (nvlist_add_string(nv, ZPOOL_CONFIG_DEVID, devid) != 0)
-			return (-1);
-		devid_str_free(devid);
-	}
+	/* Linux - update ZPOOL_CONFIG_DEVID and ZPOOL_CONFIG_PHYS_PATH */
+	update_vdev_config_dev_strs(nv);
 
 	return (0);
 }

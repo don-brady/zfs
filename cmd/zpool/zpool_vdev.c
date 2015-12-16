@@ -22,6 +22,7 @@
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2013 by Delphix. All rights reserved.
+ * Copyright (c) 2015, Intel Corporation.
  */
 
 /*
@@ -1263,6 +1264,12 @@ make_disks(zpool_handle_t *zhp, nvlist_t *nv)
 		 * future output.
 		 */
 		verify(nvlist_add_string(nv, ZPOOL_CONFIG_PATH, udevpath) == 0);
+
+		/*
+		 * Fill in ZPOOL_CONFIG_DEVID and ZPOOL_CONFIG_PHYS_PATH
+		 */
+		if (wholedisk)
+			update_vdev_config_dev_strs(nv);
 
 		return (0);
 	}
