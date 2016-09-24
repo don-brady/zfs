@@ -27,10 +27,13 @@ ZED_SRC = \
 	zed_strings.h
 
 FMA_SRC = \
+	agents/zfs_agents.c \
 	agents/zfs_agents.h \
 	agents/zfs_diagnosis.c \
 	agents/zfs_mod.c \
-	agents/zfs_retire.c
+	agents/zfs_retire.c \
+	agents/fmd_serd.c \
+	agents/fmd_serd.h
 
 zed_SOURCES = $(ZED_SRC) $(FMA_SRC)
 
@@ -38,6 +41,7 @@ zed_LDADD = \
 	$(top_builddir)/lib/libavl/libavl.la \
 	$(top_builddir)/lib/libnvpair/libnvpair.la \
 	$(top_builddir)/lib/libspl/libspl.la \
+	$(top_builddir)/lib/libuutil/libuutil.la \
 	$(top_builddir)/lib/libzpool/libzpool.la \
 	$(top_builddir)/lib/libzfs/libzfs.la \
 	$(top_builddir)/lib/libzfs_core/libzfs_core.la
@@ -54,11 +58,9 @@ dist_zedexec_SCRIPTS = \
 	zed.d/all-debug.sh \
 	zed.d/all-syslog.sh \
 	zed.d/checksum-notify.sh \
-	zed.d/checksum-spare.sh \
 	zed.d/data-notify.sh \
 	zed.d/generic-notify.sh \
 	zed.d/io-notify.sh \
-	zed.d/io-spare.sh \
 	zed.d/resilver_finish-notify.sh \
 	zed.d/scrub_finish-notify.sh
 

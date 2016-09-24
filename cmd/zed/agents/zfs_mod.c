@@ -328,9 +328,13 @@ zfs_process_add(zpool_handle_t *zhp, nvlist_t *vdev, boolean_t labeled)
 				found = B_TRUE;
 				break;
 			}
+			zed_log_msg(LOG_INFO, "zpool_label_disk: %s != %s",
+			    physpath, device->pd_physpath);
 		}
 		if (!found) {
 			/* unexpected partition slice encountered */
+			zed_log_msg(LOG_INFO, "labeled disk %s unexpecetd here",
+			    fullpath);
 			(void) zpool_vdev_online(zhp, fullpath,
 			    ZFS_ONLINE_FORCEFAULT, &newstate);
 			return;
@@ -621,12 +625,8 @@ zfs_deliver_add(nvlist_t *nvl, boolean_t is_lofi)
 	 * For disks, we only want to pay attention to vdevs marked as whole
 	 * disks.  For multipath devices does whole disk apply? (TBD).
 	 */
-	if (!devid_iter(devid, zfs_process_add, is_slice) && devpath != NULL) {
-		if (!is_slice) {
-			(void) devphys_iter(devpath, devid, zfs_process_add,
-			    is_slice);
-		}
-	}
+	if (!devid_iter(devid, zfs_process_add, is_slice) && devpath != NULL)
+		(void) devphys_iter(devpath, devid, zfs_process_add, is_slice);
 
 	return (0);
 }
@@ -809,7 +809,7 @@ zfs_enum_pools(void *arg)
 int
 zfs_slm_init(libzfs_handle_t *zfs_hdl)
 {
-	if ((g_zfshdl = libzfs_init()) == NULL)
+	if ((g_zfshdl = zfs_hdl) == NULL)
 		return (-1);
 
 	/*
@@ -836,6 +836,8 @@ zfs_slm_fini()
 	unavailpool_t *pool;
 	pendingdev_t *device;
 
+	zed_log_msg(LOG_INFO, "zfs_slm_fini");
+
 	/* wait for zfs_enum_pools thread to complete */
 	(void) pthread_join(g_zfs_tid, NULL);
 
@@ -861,19 +863,12 @@ zfs_slm_fini()
 	}
 	list_destroy(&g_device_list);
 
-	libzfs_fini(g_zfshdl);
+	g_zfshdl = NULL;
 }
 
 void
 zfs_slm_event(const char *class, const char *subclass, nvlist_t *nvl)
 {
-	static pthread_mutex_t serialize = PTHREAD_MUTEX_INITIALIZER;
-
-	/*
-	 * Serialize incoming events from zfs or libudev sources
-	 */
-	(void) pthread_mutex_lock(&serialize);
 	zed_log_msg(LOG_INFO, "zfs_slm_event: %s.%s", class, subclass);
 	(void) zfs_slm_deliver_event(class, subclass, nvl);
-	(void) pthread_mutex_unlock(&serialize);
 }

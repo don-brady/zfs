@@ -28,6 +28,9 @@ extern "C" {
 /*
  * Agents from ZFS FMA and syseventd - linked directly into ZED daemon binary
  */
+extern void zfs_agent_init(libzfs_handle_t *);
+extern void zfs_agent_fini(void);
+extern void zfs_agent_post_event(const char *, const char *, nvlist_t *);
 
 /*
  * ZFS Sysevent Linkable Module (SLM)
