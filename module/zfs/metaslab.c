@@ -2493,21 +2493,25 @@ metaslab_sync_reassess(metaslab_group_t *mg)
 	metaslab_group_preload(mg);
 }
 
-static uint64_t
-metaslab_distance(metaslab_t *msp, dva_t *dva)
+/*
+ * When writing a ditto block (i.e. more than one DVA for a given BP) on
+ * the same vdev as an existing DVA of this BP, then try to allocate it
+ * on a different metaslab than existing DVAs (i.e. a unique metaslab).
+ */
+static boolean_t
+metaslab_is_unique(metaslab_t *msp, dva_t *dva)
 {
-	uint64_t ms_shift = msp->ms_group->mg_vd->vdev_ms_shift;
-	uint64_t offset = DVA_GET_OFFSET(dva) >> ms_shift;
-	uint64_t start = msp->ms_id;
+	uint64_t dva_ms_id;
+
+	if (DVA_GET_ASIZE(dva) == 0)
+		return (B_TRUE);
 
 	if (msp->ms_group->mg_vd->vdev_id != DVA_GET_VDEV(dva))
-		return (1ULL << 63);
+		return (B_TRUE);
 
-	if (offset < start)
-		return ((start - offset) << ms_shift);
-	if (offset > start)
-		return ((offset - start) << ms_shift);
-	return (0);
+	dva_ms_id = DVA_GET_OFFSET(dva) >> msp->ms_group->mg_vd->vdev_ms_shift;
+
+	return (msp->ms_id != dva_ms_id);
 }
 
 /*
@@ -2737,13 +2741,12 @@ metaslab_block_alloc(metaslab_t *msp, uint64_t size, uint64_t txg)
 
 static uint64_t
 metaslab_group_alloc_normal(metaslab_group_t *mg, zio_alloc_list_t *zal,
-    uint64_t asize, uint64_t txg, uint64_t min_distance, dva_t *dva, int d)
+    uint64_t asize, uint64_t txg, boolean_t want_unique, dva_t *dva, int d)
 {
 	metaslab_t *msp = NULL;
 	metaslab_t *search;
 	uint64_t offset = -1ULL;
 	uint64_t activation_weight;
-	uint64_t target_distance;
 	int i;
 
 	activation_weight = METASLAB_WEIGHT_PRIMARY;
@@ -2799,14 +2802,10 @@ metaslab_group_alloc_normal(metaslab_group_t *mg, zio_alloc_list_t *zal,
 			if (activation_weight == METASLAB_WEIGHT_PRIMARY)
 				break;
 
-			target_distance = min_distance +
-			    (space_map_allocated(msp->ms_sm) != 0 ? 0 :
-			    min_distance >> 1);
-
 			for (i = 0; i < d; i++) {
-				if (metaslab_distance(msp, &dva[i]) <
-				    target_distance)
-					break;
+				if (want_unique &&
+				    !metaslab_is_unique(msp, &dva[i]))
+					break;  /* try another metaslab */
 			}
 			if (i == d)
 				break;
@@ -2932,13 +2931,13 @@ next:
 
 static uint64_t
 metaslab_group_alloc(metaslab_group_t *mg, zio_alloc_list_t *zal,
-    uint64_t asize, uint64_t txg, uint64_t min_distance, dva_t *dva, int d)
+    uint64_t asize, uint64_t txg, boolean_t want_unique, dva_t *dva, int d)
 {
 	uint64_t offset;
 	ASSERT(mg->mg_initialized);
 
 	offset = metaslab_group_alloc_normal(mg, zal, asize, txg,
-	    min_distance, dva, d);
+	    want_unique, dva, d);
 
 	mutex_enter(&mg->mg_lock);
 	if (offset == -1ULL) {
@@ -2964,14 +2963,6 @@ metaslab_group_alloc(metaslab_group_t *mg, zio_alloc_list_t *zal,
 	mutex_exit(&mg->mg_lock);
 	return (offset);
 }
-
-/*
- * If we have to write a ditto block (i.e. more than one DVA for a given BP)
- * on the same vdev as an existing DVA of this BP, then try to allocate it
- * at least (vdev_asize / (2 ^ ditto_same_vdev_distance_shift)) away from the
- * existing DVAs.
- */
-int ditto_same_vdev_distance_shift = 3;
 
 /*
  * Allocate a block for the specified i/o.
@@ -3062,7 +3053,7 @@ top:
 	do {
 		boolean_t allocatable;
 		uint64_t offset;
-		uint64_t distance, asize;
+		uint64_t asize;
 
 		ASSERT(mg->mg_activation_count == 1);
 		vd = mg->mg_vd;
@@ -3113,24 +3104,17 @@ top:
 
 		ASSERT(mg->mg_class == mc);
 
-		/*
-		 * If we don't need to try hard, then require that the
-		 * block be 1/8th of the device away from any other DVAs
-		 * in this BP.  If we are trying hard, allow any offset
-		 * to be used (distance=0).
-		 */
-		distance = 0;
-		if (!try_hard) {
-			distance = vd->vdev_asize >>
-			    ditto_same_vdev_distance_shift;
-			if (distance <= (1ULL << vd->vdev_ms_shift))
-				distance = 0;
-		}
-
 		asize = vdev_psize_to_asize(vd, psize);
 		ASSERT(P2PHASE(asize, 1ULL << vd->vdev_ashift) == 0);
 
-		offset = metaslab_group_alloc(mg, zal, asize, txg, distance,
+		/*
+		 * If we don't need to try hard, then require that the
+		 * block be on an different metaslab from any other DVAs
+		 * in this BP (unique=true).  If we are trying hard, then
+		 * allow any metaslab to be used (unique=false).
+		 */
+
+		offset = metaslab_group_alloc(mg, zal, asize, txg, !try_hard,
 		    dva, d);
 
 		if (offset != -1ULL) {

@@ -2858,6 +2858,7 @@ typedef struct zdb_blkstats {
 	uint64_t zb_count;
 	uint64_t zb_gangs;
 	uint64_t zb_ditto_samevdev;
+	uint64_t zb_ditto_same_ms;
 	uint64_t zb_psize_histogram[PSIZE_HISTO_SIZE];
 } zdb_blkstats_t;
 
@@ -2894,6 +2895,16 @@ typedef struct zdb_cb {
 	spa_t		*zcb_spa;
 } zdb_cb_t;
 
+/* test if two DVA offsets from same vdev are within the same metaslab */
+static boolean_t
+same_metaslab(spa_t *spa, uint64_t vdev, uint64_t off1, uint64_t off2)
+{
+	vdev_t *vd = vdev_lookup_top(spa, vdev);
+	uint64_t ms_shift = vd->vdev_ms_shift;
+
+	return ((off1 >> ms_shift) == (off2 >> ms_shift));
+}
+
 static void
 zdb_count_block(zdb_cb_t *zcb, zilog_t *zilog, const blkptr_t *bp,
     dmu_object_type_t type)
@@ -2905,6 +2916,8 @@ zdb_count_block(zdb_cb_t *zcb, zilog_t *zilog, const blkptr_t *bp,
 
 	if (zilog && zil_bp_tree_add(zilog, bp) != 0)
 		return;
+
+	spa_config_enter(zcb->zcb_spa, SCL_CONFIG, FTAG, RW_READER);
 
 	for (i = 0; i < 4; i++) {
 		int l = (i < 2) ? BP_GET_LEVEL(bp) : ZB_TOTAL;
@@ -2931,8 +2944,14 @@ zdb_count_block(zdb_cb_t *zcb, zilog_t *zilog, const blkptr_t *bp,
 		switch (BP_GET_NDVAS(bp)) {
 		case 2:
 			if (DVA_GET_VDEV(&bp->blk_dva[0]) ==
-			    DVA_GET_VDEV(&bp->blk_dva[1]))
+			    DVA_GET_VDEV(&bp->blk_dva[1])) {
 				zb->zb_ditto_samevdev++;
+				if (same_metaslab(zcb->zcb_spa,
+				    DVA_GET_VDEV(&bp->blk_dva[0]),
+				    DVA_GET_OFFSET(&bp->blk_dva[0]),
+				    DVA_GET_OFFSET(&bp->blk_dva[1])))
+					zb->zb_ditto_same_ms++;
+			}
 			break;
 		case 3:
 			equal = (DVA_GET_VDEV(&bp->blk_dva[0]) ==
@@ -2941,12 +2960,36 @@ zdb_count_block(zdb_cb_t *zcb, zilog_t *zilog, const blkptr_t *bp,
 			    DVA_GET_VDEV(&bp->blk_dva[2])) +
 			    (DVA_GET_VDEV(&bp->blk_dva[1]) ==
 			    DVA_GET_VDEV(&bp->blk_dva[2]));
-			if (equal != 0)
+			if (equal != 0) {
 				zb->zb_ditto_samevdev++;
+				if (DVA_GET_VDEV(&bp->blk_dva[0]) ==
+				    DVA_GET_VDEV(&bp->blk_dva[1]) &&
+				    same_metaslab(zcb->zcb_spa,
+				    DVA_GET_VDEV(&bp->blk_dva[0]),
+				    DVA_GET_OFFSET(&bp->blk_dva[0]),
+				    DVA_GET_OFFSET(&bp->blk_dva[1])))
+					zb->zb_ditto_same_ms++;
+				else if (DVA_GET_VDEV(&bp->blk_dva[0]) ==
+				    DVA_GET_VDEV(&bp->blk_dva[2]) &&
+				    same_metaslab(zcb->zcb_spa,
+				    DVA_GET_VDEV(&bp->blk_dva[0]),
+				    DVA_GET_OFFSET(&bp->blk_dva[0]),
+				    DVA_GET_OFFSET(&bp->blk_dva[2])))
+					zb->zb_ditto_same_ms++;
+				else if (DVA_GET_VDEV(&bp->blk_dva[1]) ==
+				    DVA_GET_VDEV(&bp->blk_dva[2]) &&
+				    same_metaslab(zcb->zcb_spa,
+				    DVA_GET_VDEV(&bp->blk_dva[1]),
+				    DVA_GET_OFFSET(&bp->blk_dva[1]),
+				    DVA_GET_OFFSET(&bp->blk_dva[2])))
+					zb->zb_ditto_same_ms++;
+			}
 			break;
 		}
 
 	}
+
+	spa_config_exit(zcb->zcb_spa, SCL_CONFIG, FTAG);
 
 	if (BP_IS_EMBEDDED(bp)) {
 		zcb->zcb_embedded_blocks[BPE_GET_ETYPE(bp)]++;
@@ -3435,6 +3478,10 @@ dump_block_stats(spa_t *spa)
 	if (tzb->zb_ditto_samevdev != 0) {
 		(void) printf("\tDittoed blocks on same vdev: %llu\n",
 		    (longlong_t)tzb->zb_ditto_samevdev);
+	}
+	if (tzb->zb_ditto_same_ms != 0) {
+		(void) printf("\tDittoed blocks in same metaslab: %llu\n",
+		    (longlong_t)tzb->zb_ditto_same_ms);
 	}
 
 	if (dump_opt['b'] >= 2) {
