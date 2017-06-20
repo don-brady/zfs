@@ -774,6 +774,8 @@ main(int argc, char **argv)
 				error = ENXIO;
 			} else if (strcasecmp(optarg, "dtl") == 0) {
 				error = ECHILD;
+			} else if (strcasecmp(optarg, "corrupt") == 0) {
+				error = EILSEQ; 
 			} else {
 				(void) fprintf(stderr, "invalid error type "
 				    "'%s': must be 'io', 'checksum' or "
@@ -981,7 +983,15 @@ main(int argc, char **argv)
 
 		if (error == ECKSUM) {
 			(void) fprintf(stderr, "device error type must be "
-			    "'io' or 'nxio'\n");
+			    "'io', 'nxio' or 'corrupt'\n");
+			libzfs_fini(g_zfs);
+			return (1);
+		}
+
+		if (error == EILSEQ &&
+		    (record.zi_freq == 0 || io_type != ZIO_TYPE_READ)) {
+			(void) fprintf(stderr, "device corrupt errors require "
+			    "io type read and a frequency value\n");
 			libzfs_fini(g_zfs);
 			return (1);
 		}
@@ -1109,7 +1119,7 @@ main(int argc, char **argv)
 			return (2);
 		}
 
-		if (error == ENXIO) {
+		if (error == ENXIO || error == EILSEQ) {
 			(void) fprintf(stderr, "data error type must be "
 			    "'checksum' or 'io'\n");
 			libzfs_fini(g_zfs);

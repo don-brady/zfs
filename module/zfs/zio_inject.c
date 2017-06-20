@@ -271,9 +271,27 @@ zio_handle_label_injection(zio_t *zio, int error)
 	return (ret);
 }
 
+/*ARGSUSED*/
+static int
+zio_inject_bitflip_cb(void *data, size_t len, void *private)
+{
+	zio_t *zio = private;
+	uint8_t *buffer = data;
+	uint8_t before;
+	uint_t byte = spa_get_random(len);
 
-int
-zio_handle_device_injection(vdev_t *vd, zio_t *zio, int error)
+	before = buffer[byte];
+	buffer[byte] ^= 1 << spa_get_random(8);
+
+	cmn_err(CE_NOTE, "bit flip %s at %llu, size %d, 0x%02hhX --> 0x%02hhX%s%s",
+	    zio->io_vd->vdev_path, zio->io_offset, (int)len, before, buffer[byte],
+	    zio->io_bp ? " BP" : "", zio->io_flags & ZIO_FLAG_SPECULATIVE ? " SPEC" : "");
+
+	return (1);     /* stop after first flip */
+}
+
+static int
+zio_handle_device_injection_impl(vdev_t *vd, zio_t *zio, int err1, int err2)
 {
 	inject_handler_t *handler;
 	int ret = 0;
@@ -311,7 +329,8 @@ zio_handle_device_injection(vdev_t *vd, zio_t *zio, int error)
 			    handler->zi_record.zi_iotype != zio->io_type)
 				continue;
 
-			if (handler->zi_record.zi_error == error) {
+			if (handler->zi_record.zi_error == err1 ||
+			    handler->zi_record.zi_error == err2) {
 				/*
 				 * limit error injection if requested
 				 */
@@ -322,7 +341,7 @@ zio_handle_device_injection(vdev_t *vd, zio_t *zio, int error)
 				 * For a failed open, pretend like the device
 				 * has gone away.
 				 */
-				if (error == ENXIO)
+				if (err1 == ENXIO)
 					vd->vdev_stat.vs_aux =
 					    VDEV_AUX_OPEN_FAILED;
 
@@ -335,7 +354,22 @@ zio_handle_device_injection(vdev_t *vd, zio_t *zio, int error)
 				    zio != NULL)
 					zio->io_flags |= ZIO_FLAG_IO_RETRY;
 
-				ret = error;
+				/*
+				 * EILSEQ means flip a bit after a read
+				 */
+				if (handler->zi_record.zi_error == EILSEQ) {
+					if (zio == NULL)
+						break;
+
+					ASSERT(zio->io_type == ZIO_TYPE_READ);
+
+					(void) abd_iterate_func(zio->io_abd, 0,
+					    zio->io_size, zio_inject_bitflip_cb,
+					    zio);
+					break;
+				}
+
+				ret = handler->zi_record.zi_error;
 				break;
 			}
 			if (handler->zi_record.zi_error == ENXIO) {
@@ -348,6 +382,18 @@ zio_handle_device_injection(vdev_t *vd, zio_t *zio, int error)
 	rw_exit(&inject_lock);
 
 	return (ret);
+}
+
+int
+zio_handle_device_injection(vdev_t *vd, zio_t *zio, int error)
+{
+	return (zio_handle_device_injection_impl(vd, zio, error, INT_MAX));
+}
+
+int
+zio_handle_device_injections(vdev_t *vd, zio_t *zio, int err1, int err2)
+{
+	return (zio_handle_device_injection_impl(vd, zio, err1, err2));
 }
 
 /*
