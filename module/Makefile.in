@@ -4,6 +4,7 @@ subdir-m += unicode
 subdir-m += zcommon
 subdir-m += zfs
 subdir-m += icp
+subdir-m += lua
 
 INSTALL_MOD_DIR ?= extra
 
@@ -14,7 +15,7 @@ ZFS_MODULE_CFLAGS += -I@abs_top_srcdir@/include -I@SPL@/include -I@SPL@
 @CONFIG_QAT_TRUE@KBUILD_EXTRA_SYMBOLS += @QAT_SYMBOLS@
 export ZFS_MODULE_CFLAGS
 
-SUBDIR_TARGETS = icp
+SUBDIR_TARGETS = icp lua
 
 modules:
 	@# Make the exported SPL symbols available to these modules.

@@ -5,6 +5,7 @@ SUBDIRS = \
 	cache \
 	cachefile \
 	casenorm \
+	channel_program \
 	chattr \
 	checksum \
 	clean_mirror \
