@@ -340,7 +340,7 @@ get_usage(zfs_help_t idx)
 	case HELP_BOOKMARK:
 		return (gettext("\tbookmark <snapshot> <bookmark>\n"));
 	case HELP_CHANNEL_PROGRAM:
-		return (gettext("\tprogram [-t <instruction limit>] "
+		return (gettext("\tprogram [-n] [-t <instruction limit>] "
 		    "[-m <memory limit (b)>] <pool> <program file> "
 		    "[lua args...]\n"));
 	case HELP_LOAD_KEY:
@@ -7095,10 +7095,11 @@ zfs_do_channel_program(int argc, char **argv)
 	nvlist_t *outnvl;
 	uint64_t instrlimit = ZCP_DEFAULT_INSTRLIMIT;
 	uint64_t memlimit = ZCP_DEFAULT_MEMLIMIT;
+	boolean_t sync_flag = B_TRUE;
 	zpool_handle_t *zhp;
 
 	/* check options */
-	while ((c = getopt(argc, argv, "t:m:")) != -1) {
+	while ((c = getopt(argc, argv, "nt:m:")) != -1) {
 		switch (c) {
 		case 't':
 		case 'm': {
@@ -7134,6 +7135,10 @@ zfs_do_channel_program(int argc, char **argv)
 					memlimit = arg;
 				}
 			}
+			break;
+		}
+		case 'n': {
+			sync_flag = B_FALSE;
 			break;
 		}
 		case '?':
@@ -7207,8 +7212,13 @@ zfs_do_channel_program(int argc, char **argv)
 	nvlist_t *argnvl = fnvlist_alloc();
 	fnvlist_add_string_array(argnvl, ZCP_ARG_CLIARGV, argv + 2, argc - 2);
 
-	ret = lzc_channel_program(poolname, progbuf, instrlimit, memlimit,
-	    argnvl, &outnvl);
+	if (sync_flag) {
+		ret = lzc_channel_program(poolname, progbuf,
+		    instrlimit, memlimit, argnvl, &outnvl);
+	} else {
+		ret = lzc_channel_program_nosync(poolname, progbuf,
+		    instrlimit, memlimit, argnvl, &outnvl);
+	}
 
 	if (ret != 0) {
 		/*
