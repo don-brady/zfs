@@ -288,6 +288,7 @@ extern void zfs_xvattr_set(znode_t *zp, xvattr_t *xvap, dmu_tx_t *tx);
 extern void zfs_upgrade(zfsvfs_t *zfsvfs, dmu_tx_t *tx);
 
 #endif
+#define	ZFS_NO_OBJECT	0	/* no object id */
 #ifdef	__cplusplus
 }
 #endif

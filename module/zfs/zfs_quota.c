@@ -29,6 +29,8 @@
 
 /* Portions Copyright 2010 Robert Milkowski */
 
+#include <sys/zfs_context.h>
+
 #include <sys/avl.h>
 #include <sys/dmu_objset.h>
 #include <sys/sa.h>
@@ -37,6 +39,7 @@
 #include <sys/zfs_project.h>
 #include <sys/zfs_quota.h>
 #include <sys/zfs_znode.h>
+#include <sys/zfs_sa.h>
 
 int
 zfs_space_delta_cb(dmu_object_type_t bonustype, void *data,

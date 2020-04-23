@@ -1662,6 +1662,45 @@ fm_fini(void)
 		fm_ksp = NULL;
 	}
 }
+#else
+
+typedef struct zfs_zevent zfs_zevent_t;
+
+int
+zfs_zevent_seek(zfs_zevent_t *ze, uint64_t eid)
+{
+	return (0);
+}
+
+void
+zfs_zevent_drain_all(int *count)
+{
+}
+
+int
+zfs_zevent_wait(zfs_zevent_t *ze)
+{
+	return (0);
+}
+
+int
+zfs_zevent_fd_hold(int fd, minor_t *minorp, zfs_zevent_t **ze)
+{
+	return (0);
+}
+
+void
+zfs_zevent_fd_rele(int fd)
+{
+}
+
+int
+zfs_zevent_next(zfs_zevent_t *ze, nvlist_t **event, uint64_t *event_size,
+    uint64_t *dropped)
+{
+	return (ENOENT);
+}
+
 #endif /* _KERNEL */
 
 ZFS_MODULE_PARAM(zfs_zevent, zfs_zevent_, len_max, INT, ZMOD_RW,

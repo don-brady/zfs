@@ -12,3 +12,7 @@ SUBDIRS += libzutil libunicode
 # These four libraries, which are installed as the final build product,
 # incorporate the six convenience libraries given above.
 SUBDIRS += libuutil libnvpair libzpool libzfs_core libzfs
+
+if BUILD_LINUX
+SUBDIRS += libzsk
+endif

@@ -83,7 +83,7 @@ libzfs_module_loaded(const char *module)
 	char path[256];
 
 	memcpy(path, path_prefix, sizeof (path_prefix) - 1);
-	strcpy(path + sizeof (path_prefix) - 1, module);
+	strcpy(path + sizeof (path_prefix) - 1, "fuse");
 
 	return (access(path, F_OK) == 0);
 }

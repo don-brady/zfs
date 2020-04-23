@@ -80,6 +80,7 @@ AC_CONFIG_FILES([
 	cmd/zhack/Makefile
 	cmd/zinject/Makefile
 	cmd/zpool/Makefile
+	cmd/zsk/Makefile
 	cmd/zstream/Makefile
 	cmd/zstreamdump/Makefile
 	cmd/ztest/Makefile
@@ -162,6 +163,7 @@ AC_CONFIG_FILES([
 	lib/libzfs/libzfs_core.pc
 	lib/libzfs_core/Makefile
 	lib/libzpool/Makefile
+	lib/libzsk/Makefile
 	lib/libzutil/Makefile
 	man/Makefile
 	man/man1/Makefile

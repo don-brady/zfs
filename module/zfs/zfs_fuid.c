@@ -792,4 +792,35 @@ zfs_id_to_fuidstr(zfsvfs_t *zfsvfs, const char *domain, uid_t rid,
 	(void) sprintf(buf, "%llx", (longlong_t)fuid);
 	return (0);
 }
+#else
+
+typedef struct zfsvfs zfsvfs_t;
+
+void
+zfs_fuid_sync(zfsvfs_t *zfsvfs, dmu_tx_t *tx)
+{
+}
+
+int
+zfs_id_to_fuidstr(zfsvfs_t *zfsvfs, const char *domain, uid_t rid,
+    char *buf, boolean_t addok)
+{
+	return (0);
+}
+
+void
+zfs_fuid_txhold(zfsvfs_t *zfsvfs, dmu_tx_t *tx)
+{
+}
+
+const char *
+zfs_fuid_find_by_idx(zfsvfs_t *zfsvfs, uint32_t idx)
+{
+	return (NULL);
+}
+
+
+
+
+
 #endif

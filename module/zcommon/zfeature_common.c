@@ -212,6 +212,7 @@ zfs_mod_supported(const char *scope, const char *name)
 static boolean_t
 zfs_mod_supported_feature(const char *name)
 {
+	return (B_TRUE);
 	/*
 	 * The zfs module spa_feature_table[], whether in-kernel or in
 	 * libzpool, always supports all the features. libzfs needs to

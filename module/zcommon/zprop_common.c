@@ -69,6 +69,7 @@ zprop_get_numprops(zfs_type_t type)
 static boolean_t
 zfs_mod_supported_prop(const char *name, zfs_type_t type)
 {
+	return (B_TRUE);
 /*
  * The zfs module spa_feature_table[], whether in-kernel or in libzpool,
  * always supports all the properties. libzfs needs to query the running

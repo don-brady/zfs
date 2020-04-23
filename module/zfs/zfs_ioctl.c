@@ -154,12 +154,30 @@
  *   ZFS_ERR_IOC_ARG_BADTYPE	an input argument has an invalid type
  */
 
-#include <sys/types.h>
-#include <sys/param.h>
+#include <sys/zfs_context.h>
+#include <sys/file.h>
+
+struct zfsdev_state;
+struct zfs_dirlock;
+struct znode;
+struct zvol_state_handle;
+struct zfs_zevent;
+
+typedef struct zfsdev_state zfsdev_state_t;
+typedef struct zfs_dirlock zfs_dirlock_t;
+typedef struct znode znode_t;
+typedef struct zvol_state_handle zvol_state_handle_t;
+typedef struct zfs_zevent zfs_zevent_t;
+
+#define KMALLOC_MAX_SIZE	(1UL << 20)
+#define	FKIOCTL	(0)
+
+// #include <sys/types.h>
+// #include <sys/param.h>
 #include <sys/errno.h>
 #include <sys/uio.h>
 #include <sys/file.h>
-#include <sys/kmem.h>
+// #include <sys/kmem.h>
 #include <sys/cmn_err.h>
 #include <sys/stat.h>
 #include <sys/zfs_ioctl.h>
@@ -1291,6 +1309,8 @@ get_nvlist(uint64_t nvl, uint64_t size, int iflag, nvlist_t **nvp)
 	int error;
 	nvlist_t *list = NULL;
 
+	cmn_err(CE_WARN, "get_nvlist %d bytes:\n", size);
+
 	/*
 	 * Read in and unpack the user-supplied nvlist.
 	 */
@@ -1311,6 +1331,8 @@ get_nvlist(uint64_t nvl, uint64_t size, int iflag, nvlist_t **nvp)
 	}
 
 	vmem_free(packed, size);
+
+	dump_nvlist(list, 4);
 
 	*nvp = list;
 	return (0);
@@ -1367,6 +1389,9 @@ put_nvlist(zfs_cmd_t *zc, nvlist_t *nvl)
 	if (size > zc->zc_nvlist_dst_size) {
 		error = SET_ERROR(ENOMEM);
 	} else {
+		cmn_err(CE_WARN, "put_nvlist %d bytes:\n", size);
+		dump_nvlist(nvl, 4);
+
 		packed = fnvlist_pack(nvl, &size);
 		if (ddi_copyout(packed, (void *)(uintptr_t)zc->zc_nvlist_dst,
 		    size, zc->zc_iflags) != 0)
@@ -3228,11 +3253,11 @@ zfs_ioc_create(const char *fsname, nvlist_t *innvl, nvlist_t *outnvl)
 	case DMU_OST_ZFS:
 		cbfunc = zfs_create_cb;
 		break;
-
+#ifdef _KERNEL
 	case DMU_OST_ZVOL:
 		cbfunc = zvol_create_cb;
 		break;
-
+#endif
 	default:
 		cbfunc = NULL;
 		break;
@@ -7253,7 +7278,7 @@ zfsdev_getminor(int fd, minor_t *minorp)
 		return (SET_ERROR(EBADF));
 
 	mutex_enter(&zfsdev_state_lock);
-
+#if 0
 	for (zs = zfsdev_state_list; zs != NULL; zs = zs->zs_next) {
 
 		if (zs->zs_minor == -1)
@@ -7265,7 +7290,7 @@ zfsdev_getminor(int fd, minor_t *minorp)
 			return (0);
 		}
 	}
-
+#endif
 	mutex_exit(&zfsdev_state_lock);
 
 	return (SET_ERROR(EBADF));
@@ -7274,6 +7299,7 @@ zfsdev_getminor(int fd, minor_t *minorp)
 static void *
 zfsdev_get_state_impl(minor_t minor, enum zfsdev_state_type which)
 {
+#if 0
 	zfsdev_state_t *zs;
 
 	for (zs = zfsdev_state_list; zs != NULL; zs = zs->zs_next) {
@@ -7289,7 +7315,7 @@ zfsdev_get_state_impl(minor_t minor, enum zfsdev_state_type which)
 			}
 		}
 	}
-
+#endif
 	return (NULL);
 }
 
@@ -7349,6 +7375,7 @@ zfsdev_ioctl_common(uint_t vecnum, zfs_cmd_t *zc)
 	 */
 	if (vec->zvec_func == NULL && vec->zvec_legacy_func == NULL)
 		return (SET_ERROR(ZFS_ERR_IOC_CMD_UNAVAIL));
+
 
 	zc->zc_iflags = flag & FKIOCTL;
 	if (zc->zc_nvlist_src_size > MAX_NVLIST_SRC_SIZE) {
@@ -7537,9 +7564,10 @@ zfs_kmod_init(void)
 	zfs_ioctl_init();
 
 	mutex_init(&zfsdev_state_lock, NULL, MUTEX_DEFAULT, NULL);
+ #ifdef __KERNEL__
 	zfsdev_state_list = kmem_zalloc(sizeof (zfsdev_state_t), KM_SLEEP);
 	zfsdev_state_list->zs_minor = -1;
-
+#endif
 	if ((error = zfsdev_attach()) != 0)
 		goto out;
 
@@ -7564,7 +7592,7 @@ zfs_kmod_fini(void)
 	zfsdev_detach();
 
 	mutex_destroy(&zfsdev_state_lock);
-
+ #ifdef __KERNEL__
 	for (zs = zfsdev_state_list; zs != NULL; zs = zs->zs_next) {
 		if (zsprev)
 			kmem_free(zsprev, sizeof (zfsdev_state_t));
@@ -7572,6 +7600,7 @@ zfs_kmod_fini(void)
 	}
 	if (zsprev)
 		kmem_free(zsprev, sizeof (zfsdev_state_t));
+#endif
 
 	zfs_fini();
 	spa_fini();
