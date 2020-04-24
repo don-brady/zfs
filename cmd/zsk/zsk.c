@@ -213,7 +213,7 @@ typedef struct zsk_cmd_save {
 	uint64_t	zc_nvlist_conf;		/* really (char *) */
 } zsk_cmd_save_t;
 
-#define	MAX_IN_VEC	3
+#define	MAX_IN_VEC	4
 #define	MAX_OUT_VEC	9
 #define	MAX_IOV_LEN	32768
 #define	MAX_IOV_BYTES	(131072 - sizeof(zfs_cmd_t))
@@ -241,25 +241,30 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 	out_iov[out_vec_cnt].iov_base = arg;
 	out_iov[out_vec_cnt++].iov_len = sizeof(zfs_cmd_t);
 
-	fprintf(stderr, "arg: %p\n", arg);
-	fprintf(stderr, "in_bufsz: %d\n", (int)in_bufsz);
-	fprintf(stderr, "out_bufsz: %d\n", (int)out_bufsz);
-
 	/* read in zfs_cmd_t */
 	if (!in_bufsz) {
 		/* Retry this ioctl call with the zfs command data filled in */
 		(void) fuse_reply_ioctl_retry(req, in_iov, 1, NULL, 0);
 
-		fprintf(stderr, "copied %d byte zfs_cmd_t\n", (int)in_iov[0].iov_len);
+		fprintf(stderr, "\n================= 0x%x =================\n",
+		    cmd);
+		fprintf(stderr, "copied %d byte zfs_cmd_t\n",
+		    (int)in_iov[0].iov_len);
 		return;
 	}
 
+	fprintf(stderr, "arg: %p\n", arg);
+	fprintf(stderr, "in_bufsz: %d\n", (int)in_bufsz);
+	fprintf(stderr, "out_bufsz: %d\n", (int)out_bufsz);
+
 	zc = (zfs_cmd_t *)in_buf;
 
+	/* read in the nvlist and history and prep for output */
 	if (in_bufsz == sizeof(zfs_cmd_t) && out_bufsz == 0) {
 		/* read in optional config nvlist */
 		if (zc->zc_nvlist_conf_size > 0) {
-			fprintf(stderr, "\tzc_nvlist_conf: 0x%llx, zc_nvlist_conf_size: %d\n",
+			fprintf(stderr, "\tzc_nvlist_conf: 0x%llx, "
+			    "zc_nvlist_conf_size: %d\n",
 			    (long long unsigned)zc->zc_nvlist_conf,
 			    (int)zc->zc_nvlist_conf_size);
 			in_iov[in_vec_cnt].iov_base = (void *)zc->zc_nvlist_conf;
@@ -268,21 +273,38 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 
 		/* read in optional source nvlist */
 		if (zc->zc_nvlist_src_size > 0) {
-			fprintf(stderr, "\tzc_nvlist_src: 0x%llx, zc_nvlist_src_size: %d\n",
+			fprintf(stderr, "\tzc_nvlist_src: 0x%llx, "
+			    "zc_nvlist_src_size: %d\n",
 			    (long long unsigned)zc->zc_nvlist_src,
 			    (int)zc->zc_nvlist_src_size);
 			in_iov[in_vec_cnt].iov_base = (void *)zc->zc_nvlist_src;
 			in_iov[in_vec_cnt++].iov_len = zc->zc_nvlist_src_size;
 		}
 
-		/* prepare destination nvlist buffer */
-		if (zc->zc_nvlist_dst_size > 0) {
-			fprintf(stderr, "\tzc_nvlist_dst: 0x%llx, zc_nvlist_dst_size: %d\n",
-			    (long long unsigned)zc->zc_nvlist_dst,
-			    (int)zc->zc_nvlist_dst_size);
+		/* read in optional history (zpool destroy | zpool export) */
+		if (zc->zc_history && zc->zc_history_len == 0) {
+			fprintf(stderr, "\tzc_history: 0x%llx, "
+			    "zc_history_len: %d, zc_history_offset: %d\n",
+			    (long long unsigned)zc->zc_history,
+			    zc->zc_history_len), zc->zc_history_offset;
+			in_iov[in_vec_cnt].iov_base = (void *)zc->zc_history;
+			in_iov[in_vec_cnt++].iov_len = HIS_MAX_RECORD_LEN;
+		}
 
-			int length = MIN(MAX_IOV_BYTES, zc->zc_nvlist_dst_size);
-			char *iovbase = (void *)zc->zc_nvlist_dst;
+		/* prepare output buffers (for copyout) */
+		if (zc->zc_nvlist_dst_size > 0 || cmd == ZFS_IOC_POOL_GET_HISTORY) {
+			char * iovbase;
+			int length;
+
+			if (zc->zc_nvlist_dst_size) {
+				length = MIN(MAX_IOV_BYTES, zc->zc_nvlist_dst_size);
+				iovbase = (void *)zc->zc_nvlist_dst;
+			} else {
+				length = MIN(MAX_IOV_BYTES, zc->zc_history_len);
+				iovbase = (void *)zc->zc_history;
+			}
+			fprintf(stderr, "\toutput buffer: 0x%llx, "
+			    "output size: %d\n", iovbase, length);
 
 			/*
 			 * The maximum iov_len seems to be 32K so we
@@ -292,8 +314,6 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 			while (length > 0 && out_vec_cnt < MAX_OUT_VEC) {
 				int iovlen =
 				    length > MAX_IOV_LEN ? MAX_IOV_LEN : length;
-
-				printf("out_iov[%d] = %d\n", out_vec_cnt, iovlen);
 
 				out_iov[out_vec_cnt].iov_base = iovbase;
 				out_iov[out_vec_cnt++].iov_len = iovlen;
@@ -339,26 +359,35 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 	ret_iov[ret_vec_cnt].iov_base = zc;
 	ret_iov[ret_vec_cnt++].iov_len = sizeof(zfs_cmd_t);
 
-	if (zc->zc_nvlist_dst_size > 0) {
-		int length = MIN(MAX_IOV_BYTES, zc->zc_nvlist_dst_size);
-		char *iovbase = malloc(zc->zc_nvlist_dst_size);
+	/* NOTE -- assumes that we have only one of nvlist_dst and history */
+	if (zc->zc_nvlist_dst_size > 0 || zc->zc_history_len > 0) {
+		char *buffer;
+		int length;
+
+		if (zc->zc_nvlist_dst_size) {
+			length = MIN(MAX_IOV_BYTES, zc->zc_nvlist_dst_size);
+			buffer = malloc(length);
+			zc->zc_nvlist_dst = (uint64_t)(uintptr_t)buffer;
+			zc->zc_nvlist_dst_size = length;
+		} else {
+			length = MIN(MAX_IOV_BYTES, zc->zc_history_len);
+			buffer = malloc(length);
+			zc->zc_history = (uint64_t)(uintptr_t)buffer;
+			zc->zc_history_len = length;
+		}
 
 		/*
-		 * The maximum iov_len seems to be 32K so we
-		 * need to break up large nvlist dst output
-		 * over multiple vectors
+		 * The maximum iov_len seems to be 32K so we need to break
+		 * up a large output buffer over multiple vectors
 		 */
 		while (length > 0 && ret_vec_cnt < MAX_OUT_VEC) {
 			int iovlen = length > MAX_IOV_LEN ? MAX_IOV_LEN : length;
 
-			printf("ret_iov[%d] = %d\n", ret_vec_cnt, iovlen);
-
-			ret_iov[ret_vec_cnt].iov_base = iovbase;
+			ret_iov[ret_vec_cnt].iov_base = buffer;
 			ret_iov[ret_vec_cnt++].iov_len = iovlen;
 			length -= iovlen;
-			iovbase += iovlen;
+			buffer += iovlen;
 		}
-		zc->zc_nvlist_dst = (uint64_t)(uintptr_t)ret_iov[1].iov_base;
 	}
 
 	/* fix up the nvlist pointers to reference the in_buf locations */
@@ -374,10 +403,10 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 		zc->zc_nvlist_src = (uint64_t)(uintptr_t)extra;
 		extra += zc->zc_nvlist_src_size;
 	}
-
-	if (zc->zc_history != 0) {
-		fprintf(stderr, "\tzc_history: 0x%llxp\n",
-		    (long long unsigned)zc->zc_history);
+	if (zc->zc_history && zc->zc_history_len == 0) {
+		printf("last history: %s\n", extra);
+		zc->zc_history = (uint64_t)(uintptr_t)extra;
+		extra += HIS_MAX_RECORD_LEN;
 	}
 
 	vecnum = cmd - ZFS_IOC_FIRST;

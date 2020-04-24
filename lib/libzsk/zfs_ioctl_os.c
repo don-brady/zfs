@@ -68,7 +68,6 @@ zfs_proc_is_caller(struct task_struct *t)
 int
 ddi_copyin(const void *from, void *to, size_t len, int flags)
 {
-//	printf("ddi_copyin %d bytes from %p to %p\n", (int)len, from, to);
 	memcpy(to, from, len);
 	return (0);
 }
@@ -76,8 +75,16 @@ ddi_copyin(const void *from, void *to, size_t len, int flags)
 int
 ddi_copyout(const void *from, void *to, size_t len, int flags)
 {
-//	printf("ddi_copyout %d bytes from %p to %p\n", (int)len, from, to);
 	memcpy(to, from, len);
+	return (0);
+}
+
+copyinstr(const void *from, void *to, size_t len, size_t *done)
+{
+	memset(to, 0, len);
+	memcpy(to, from, len - 1);
+	if (done != NULL)
+		*done = strlen(to);
 	return (0);
 }
 
@@ -87,6 +94,5 @@ zfs_file_private(void) {}
 secpolicy_zinject(void) {}
 zfsctl_snapshot_unmount(void) {}
 secpolicy_sys_config(void) {}
-copyinstr(void) {}
 groupmember(void) {}
 
