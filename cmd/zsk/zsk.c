@@ -1,37 +1,7 @@
-/*
-  CUSE example: Character device in Userspace
-  Copyright (C) 2008-2009  SUSE Linux Products GmbH
-  Copyright (C) 2008-2009  Tejun Heo <tj@kernel.org>
-
-  This program can be distributed under the terms of the GNU GPL.
-  See the file COPYING.
-
-*/
-
-/** @file
- *
- * This example demonstrates how to implement a character device in
- * userspace ("CUSE"). This is only allowed for root. The character
- * device should appear in /dev under the specified name. It can be
- * tested with the cuse_client.c program.
- *
- * Mount the file system with:
- *
- *     cuse -f --name=mydevice
- *
- * You should now have a new /dev/mydevice character device. To "unmount" it,
- * kill the "cuse" process.
- *
- * To compile this example, run
- *
- *     gcc -Wall cuse.c `pkg-config fuse3 --cflags --libs` -o cuse
- *
- * ## Source code ##
- * \include cuse.c
- */
 
 
-#define FUSE_USE_VERSION 31
+
+#define	FUSE_USE_VERSION	31
 
 #include <fuse3/cuse_lowlevel.h>
 #include <fuse3/fuse_opt.h>
@@ -42,7 +12,9 @@
 #include <unistd.h>
 #include <errno.h>
 
-#include "ioctl.h"
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
 
 struct zfsvfs;
 struct zfsdev_state;
@@ -56,9 +28,6 @@ typedef struct zfsdev_state zfsdev_state_t;
 
 void zfs_ioctl_init(void);
 
-static void *cusexmp_buf;
-static size_t cusexmp_size;
-
 static const char *usage =
 "usage: zsk [options]\n"
 "\n"
@@ -71,140 +40,17 @@ static const char *usage =
 "    -s                    disable multi-threaded operation\n"
 "\n";
 
-static int cusexmp_resize(size_t new_size)
-{
-	void *new_buf;
-
-	if (new_size == cusexmp_size)
-		return 0;
-
-	new_buf = realloc(cusexmp_buf, new_size);
-	if (!new_buf && new_size)
-		return -ENOMEM;
-
-	if (new_size > cusexmp_size)
-		memset(new_buf + cusexmp_size, 0, new_size - cusexmp_size);
-
-	cusexmp_buf = new_buf;
-	cusexmp_size = new_size;
-
-	return 0;
-}
-
-static int cusexmp_expand(size_t new_size)
-{
-	if (new_size > cusexmp_size)
-		return cusexmp_resize(new_size);
-	return 0;
-}
 
 static void zsk_open(fuse_req_t req, struct fuse_file_info *fi)
 {
 	fuse_reply_open(req, fi);
 }
 
-static void zsk_read(fuse_req_t req, size_t size, off_t off,
-			 struct fuse_file_info *fi)
+void
+zsk_release(fuse_req_t req, struct fuse_file_info *fi)
 {
-	(void)fi;
-
-	if (off >= cusexmp_size)
-		off = cusexmp_size;
-	if (size > cusexmp_size - off)
-		size = cusexmp_size - off;
-
-	fuse_reply_buf(req, cusexmp_buf + off, size);
+	fuse_reply_err(req, 0);
 }
-
-static void zsk_write(fuse_req_t req, const char *buf, size_t size,
-			  off_t off, struct fuse_file_info *fi)
-{
-	(void)fi;
-
-	if (cusexmp_expand(off + size)) {
-		fuse_reply_err(req, ENOMEM);
-		return;
-	}
-
-	memcpy(cusexmp_buf + off, buf, size);
-	fuse_reply_write(req, size);
-}
-
-static void fioc_do_rw(fuse_req_t req, void *addr, const void *in_buf,
-		       size_t in_bufsz, size_t out_bufsz, int is_read)
-{
-	const struct fioc_rw_arg *arg;
-	struct iovec in_iov[2], out_iov[3], iov[3];
-	size_t cur_size;
-
-	/* read in arg */
-	in_iov[0].iov_base = addr;
-	in_iov[0].iov_len = sizeof(*arg);
-	if (!in_bufsz) {
-		fuse_reply_ioctl_retry(req, in_iov, 1, NULL, 0);
-		return;
-	}
-	arg = in_buf;
-	in_buf += sizeof(*arg);
-	in_bufsz -= sizeof(*arg);
-
-	/* prepare size outputs */
-	out_iov[0].iov_base =
-		addr + offsetof(struct fioc_rw_arg, prev_size);
-	out_iov[0].iov_len = sizeof(arg->prev_size);
-
-	out_iov[1].iov_base =
-		addr + offsetof(struct fioc_rw_arg, new_size);
-	out_iov[1].iov_len = sizeof(arg->new_size);
-
-	/* prepare client buf */
-	if (is_read) {
-		out_iov[2].iov_base = arg->buf;
-		out_iov[2].iov_len = arg->size;
-		if (!out_bufsz) {
-			fuse_reply_ioctl_retry(req, in_iov, 1, out_iov, 3);
-			return;
-		}
-	} else {
-		in_iov[1].iov_base = arg->buf;
-		in_iov[1].iov_len = arg->size;
-		if (arg->size && !in_bufsz) {
-			fuse_reply_ioctl_retry(req, in_iov, 2, out_iov, 2);
-			return;
-		}
-	}
-
-	/* we're all set */
-	cur_size = cusexmp_size;
-	iov[0].iov_base = &cur_size;
-	iov[0].iov_len = sizeof(cur_size);
-
-	iov[1].iov_base = &cusexmp_size;
-	iov[1].iov_len = sizeof(cusexmp_size);
-
-	if (is_read) {
-		size_t off = arg->offset;
-		size_t size = arg->size;
-
-		if (off >= cusexmp_size)
-			off = cusexmp_size;
-		if (size > cusexmp_size - off)
-			size = cusexmp_size - off;
-
-		iov[2].iov_base = cusexmp_buf + off;
-		iov[2].iov_len = size;
-		fuse_reply_ioctl_iov(req, size, iov, 3);
-	} else {
-		if (cusexmp_expand(arg->offset + in_bufsz)) {
-			fuse_reply_err(req, ENOMEM);
-			return;
-		}
-
-		memcpy(cusexmp_buf + arg->offset, in_buf, in_bufsz);
-		fuse_reply_ioctl_iov(req, in_bufsz, iov, 2);
-	}
-}
-
 
 typedef struct zsk_cmd_save {
 	uint64_t	zc_nvlist_src;		/* really (char *) */
@@ -216,11 +62,13 @@ typedef struct zsk_cmd_save {
 #define	MAX_IN_VEC	4
 #define	MAX_OUT_VEC	9
 #define	MAX_IOV_LEN	32768
-#define	MAX_IOV_BYTES	(131072 - sizeof(zfs_cmd_t))
+#define	MAX_IOV_BYTES	(131072 - sizeof (zfs_cmd_t))
 
-static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
-    const void *in_buf, size_t in_bufsz, size_t out_bufsz)
+static void zsk_ioctl(fuse_req_t req, int cmd, void *arg,
+    struct fuse_file_info *fi, unsigned flags, const void *in_buf,
+    size_t in_bufsz, size_t out_bufsz)
 {
+	(void) fi;
 	zfs_cmd_t *zc;
 	const char *extra;
 	zsk_cmd_save_t saved;
@@ -235,11 +83,11 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 
 	/* where input zfs_cmd_t is coming from --> */
 	in_iov[in_vec_cnt].iov_base = arg;
-	in_iov[in_vec_cnt++].iov_len = sizeof(zfs_cmd_t);
+	in_iov[in_vec_cnt++].iov_len = sizeof (zfs_cmd_t);
 
 	/* where output zfs_cmd_t is going <-- */
 	out_iov[out_vec_cnt].iov_base = arg;
-	out_iov[out_vec_cnt++].iov_len = sizeof(zfs_cmd_t);
+	out_iov[out_vec_cnt++].iov_len = sizeof (zfs_cmd_t);
 
 	/* read in zfs_cmd_t */
 	if (!in_bufsz) {
@@ -253,6 +101,21 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 		return;
 	}
 
+	switch(cmd) {
+	case ZFS_IOC_POOL_CREATE:
+	case ZFS_IOC_CREATE:
+		fprintf(stderr, "missing ZPL/znode layer\n");
+		/* fall through */
+
+	case ZFS_IOC_RECV:
+	case ZFS_IOC_SEND:
+		/* fall through */
+
+		fuse_reply_err(req, ENOTSUP);
+		return;
+	}
+
+	fprintf(stderr, "0x%x\n", cmd);
 	fprintf(stderr, "arg: %p\n", arg);
 	fprintf(stderr, "in_bufsz: %d\n", (int)in_bufsz);
 	fprintf(stderr, "out_bufsz: %d\n", (int)out_bufsz);
@@ -260,14 +123,15 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 	zc = (zfs_cmd_t *)in_buf;
 
 	/* read in the nvlist and history and prep for output */
-	if (in_bufsz == sizeof(zfs_cmd_t) && out_bufsz == 0) {
+	if (in_bufsz == sizeof (zfs_cmd_t) && out_bufsz == 0) {
 		/* read in optional config nvlist */
 		if (zc->zc_nvlist_conf_size > 0) {
 			fprintf(stderr, "\tzc_nvlist_conf: 0x%llx, "
 			    "zc_nvlist_conf_size: %d\n",
 			    (long long unsigned)zc->zc_nvlist_conf,
 			    (int)zc->zc_nvlist_conf_size);
-			in_iov[in_vec_cnt].iov_base = (void *)zc->zc_nvlist_conf;
+			in_iov[in_vec_cnt].iov_base =
+			    (void *)zc->zc_nvlist_conf;
 			in_iov[in_vec_cnt++].iov_len = zc->zc_nvlist_conf_size;
 		}
 
@@ -286,24 +150,27 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 			fprintf(stderr, "\tzc_history: 0x%llx, "
 			    "zc_history_len: %d, zc_history_offset: %d\n",
 			    (long long unsigned)zc->zc_history,
-			    zc->zc_history_len), zc->zc_history_offset;
+			    (int)zc->zc_history_len,
+			    (int)zc->zc_history_offset);
 			in_iov[in_vec_cnt].iov_base = (void *)zc->zc_history;
 			in_iov[in_vec_cnt++].iov_len = HIS_MAX_RECORD_LEN;
 		}
 
 		/* prepare output buffers (for copyout) */
-		if (zc->zc_nvlist_dst_size > 0 || cmd == ZFS_IOC_POOL_GET_HISTORY) {
-			char * iovbase;
+		if (zc->zc_nvlist_dst_size > 0 ||
+		    cmd == ZFS_IOC_POOL_GET_HISTORY) {
+			char *iovbase;
 			int length;
 
 			if (zc->zc_nvlist_dst_size) {
-				length = MIN(MAX_IOV_BYTES, zc->zc_nvlist_dst_size);
+				length =
+				    MIN(MAX_IOV_BYTES, zc->zc_nvlist_dst_size);
 				iovbase = (void *)zc->zc_nvlist_dst;
 			} else {
 				length = MIN(MAX_IOV_BYTES, zc->zc_history_len);
 				iovbase = (void *)zc->zc_history;
 			}
-			fprintf(stderr, "\toutput buffer: 0x%llx, "
+			fprintf(stderr, "\toutput buffer: %p, "
 			    "output size: %d\n", iovbase, length);
 
 			/*
@@ -342,8 +209,6 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 		error = fuse_reply_ioctl_retry(req, in_iov, in_vec_cnt,
 		    out_iov, out_vec_cnt);
 
-		fprintf(stderr, "copied nvl lists and set output (%d)\n", error);
-
 		return;
 	}
 
@@ -357,7 +222,7 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 	saved.zc_history = zc->zc_history;
 
 	ret_iov[ret_vec_cnt].iov_base = zc;
-	ret_iov[ret_vec_cnt++].iov_len = sizeof(zfs_cmd_t);
+	ret_iov[ret_vec_cnt++].iov_len = sizeof (zfs_cmd_t);
 
 	/* NOTE -- assumes that we have only one of nvlist_dst and history */
 	if (zc->zc_nvlist_dst_size > 0 || zc->zc_history_len > 0) {
@@ -381,7 +246,8 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 		 * up a large output buffer over multiple vectors
 		 */
 		while (length > 0 && ret_vec_cnt < MAX_OUT_VEC) {
-			int iovlen = length > MAX_IOV_LEN ? MAX_IOV_LEN : length;
+			int iovlen =
+			    length > MAX_IOV_LEN ? MAX_IOV_LEN : length;
 
 			ret_iov[ret_vec_cnt].iov_base = buffer;
 			ret_iov[ret_vec_cnt++].iov_len = iovlen;
@@ -391,15 +257,16 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 	}
 
 	/* fix up the nvlist pointers to reference the in_buf locations */
-	extra = (char *)in_buf + sizeof(zfs_cmd_t);
-	if (zc->zc_nvlist_conf_size > 0 ) {
+	extra = (char *)in_buf + sizeof (zfs_cmd_t);
+	if (zc->zc_nvlist_conf_size > 0) {
 		zc->zc_nvlist_conf = (uint64_t)(uintptr_t)extra;
 		extra += zc->zc_nvlist_conf_size;
-		fprintf(stderr, "\t patched zc_nvlist_conf: 0x%llx, zc_nvlist_conf_size: %d\n",
+		fprintf(stderr, "\t patched zc_nvlist_conf: 0x%llx,"
+		    "zc_nvlist_conf_size: %d\n",
 		    (long long unsigned)zc->zc_nvlist_conf,
 		    (int)zc->zc_nvlist_conf_size);
 	}
-	if (zc->zc_nvlist_src_size > 0 ) {
+	if (zc->zc_nvlist_src_size > 0) {
 		zc->zc_nvlist_src = (uint64_t)(uintptr_t)extra;
 		extra += zc->zc_nvlist_src_size;
 	}
@@ -428,52 +295,6 @@ static void zsk_ioctl_zfs(fuse_req_t req, int cmd, void *arg,
 	}
 }
 
-static void zsk_ioctl(fuse_req_t req, int cmd, void *arg,
-    struct fuse_file_info *fi, unsigned flags, const void *in_buf,
-    size_t in_bufsz, size_t out_bufsz)
-{
-	int is_read = 0;
-
-	(void)fi;
-
-	if (flags & FUSE_IOCTL_COMPAT) {
-		fuse_reply_err(req, ENOSYS);
-		return;
-	}
-
-	switch (cmd) {
-	case FIOC_GET_SIZE:
-		if (!out_bufsz) {
-			struct iovec iov = { arg, sizeof(size_t) };
-
-			fuse_reply_ioctl_retry(req, NULL, 0, &iov, 1);
-		} else
-			fuse_reply_ioctl(req, 0, &cusexmp_size,
-					 sizeof(cusexmp_size));
-		break;
-
-	case FIOC_SET_SIZE:
-		if (!in_bufsz) {
-			struct iovec iov = { arg, sizeof(size_t) };
-
-			fuse_reply_ioctl_retry(req, &iov, 1, NULL, 0);
-		} else {
-			cusexmp_resize(*(size_t *)in_buf);
-			fuse_reply_ioctl(req, 0, NULL, 0);
-		}
-		break;
-
-	case FIOC_READ:
-		is_read = 1;
-		/* fall through */
-	case FIOC_WRITE:
-		fioc_do_rw(req, arg, in_buf, in_bufsz, out_bufsz, is_read);
-		break;
-
-	default:
-		zsk_ioctl_zfs(req, cmd, arg, in_buf, in_bufsz, out_bufsz);
-	}
-}
 /*
  * called after initialization is complete
  */
@@ -498,7 +319,7 @@ struct cusexmp_param {
 	int			is_help;
 };
 
-#define CUSEXMP_OPT(t, p) { t, offsetof(struct cusexmp_param, p), 1 }
+#define	CUSEXMP_OPT(t, p) { t, offsetof(struct cusexmp_param, p), 1 }
 
 static const struct fuse_opt cusexmp_opts[] = {
 	CUSEXMP_OPT("-M %u",		major),
@@ -513,33 +334,33 @@ static const struct fuse_opt cusexmp_opts[] = {
 };
 
 static int cusexmp_process_arg(void *data, const char *arg, int key,
-			       struct fuse_args *outargs)
+    struct fuse_args *outargs)
 {
 	struct cusexmp_param *param = data;
 
-	(void)outargs;
-	(void)arg;
+	(void) outargs;
+	(void) arg;
 
 	switch (key) {
 	case 0:
 		param->is_help = 1;
 		fprintf(stderr, "%s", usage);
-		return fuse_opt_add_arg(outargs, "-ho");
+		return (fuse_opt_add_arg(outargs, "-ho"));
 	default:
-		return 1;
+		return (1);
 	}
 }
 
-static const struct cuse_lowlevel_ops zsk_ops = {
-	.open		= zsk_open,
-	.read		= zsk_read,
-	.write		= zsk_write,
-	.ioctl		= zsk_ioctl,
+static const struct cuse_lowlevel_ops zsk_dev_ops = {
 	.init_done	= zsk_init_done,
-	.destroy	= zsk_destroy
+	.destroy	= zsk_destroy,
+	.open		= zsk_open,
+	.release	= zsk_release,
+	.ioctl		= zsk_ioctl
 };
 
-int main(int argc, char **argv)
+int
+main(int argc, char **argv)
 {
 	struct fuse_args args = FUSE_ARGS_INIT(argc, argv);
 	struct cusexmp_param param = { 0, 0, NULL, 0 };
@@ -548,19 +369,21 @@ int main(int argc, char **argv)
 
 	if (fuse_opt_parse(&args, &param, cusexmp_opts, cusexmp_process_arg)) {
 		printf("failed to parse option\n");
-		return 1;
+		return (1);
 	}
-	if( access("/dev/zfs", F_OK ) != -1 ) {
-		(void)fprintf(stderr, "'%s' control node already exists!\n", "/dev/zfs");
-		return 1;
+	if (access("/dev/zfs", F_OK) != -1) {
+		(void) fprintf(stderr, "'%s' control node already exists!\n",
+		    "/dev/zfs");
+		return (1);
 	}
 
-	memset(&ci, 0, sizeof(ci));
+	memset(&ci, 0, sizeof (ci));
 	ci.dev_major = param.major;
 	ci.dev_minor = param.minor;
 	ci.dev_info_argc = 1;
 	ci.dev_info_argv = dev_info_argv;
 	ci.flags = CUSE_UNRESTRICTED_IOCTL;
 
-	return cuse_lowlevel_main(args.argc, args.argv, &ci, &zsk_ops, "private data goes here");
+	return cuse_lowlevel_main(args.argc, args.argv, &ci, &zsk_dev_ops,
+	    "private data goes here");
 }

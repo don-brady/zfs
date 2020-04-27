@@ -79,6 +79,13 @@ ddi_copyout(const void *from, void *to, size_t len, int flags)
 	return (0);
 }
 
+int
+xcopyout(const void *from, void *to, size_t len)
+{
+	memcpy(to, from, len);
+	return (0);
+}
+
 copyinstr(const void *from, void *to, size_t len, size_t *done)
 {
 	memset(to, 0, len);
@@ -88,7 +95,6 @@ copyinstr(const void *from, void *to, size_t len, size_t *done)
 	return (0);
 }
 
-void xcopyout(void) {}
 void is_system_labeled(void) {}
 zfs_file_private(void) {}
 secpolicy_zinject(void) {}

@@ -27,7 +27,7 @@
 #include <sys/isa_defs.h>
 #include <sys/types32.h>
 #include <sys/list.h>
-//#include <sys/vfs.h>
+// #include <sys/vfs.h>
 #include <sys/zil.h>
 #include <sys/sa.h>
 #include <sys/rrwlock.h>
